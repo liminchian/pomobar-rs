@@ -36,7 +36,6 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let n = socket.read(&mut buf).await.unwrap();
             if n == 0 {
-                return;
             } else {
                 let command = String::from_utf8(buf[..n].to_vec()).unwrap();
 

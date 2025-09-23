@@ -51,10 +51,10 @@ impl State {
     }
 }
 
-impl ToString for State {
-    fn to_string(&self) -> String {
-        let result = serde_json::to_string(&self).unwrap();
-        result.replace("\"", "")
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let content = serde_json::to_string(&self).unwrap();
+        write!(f, "{}", content)
     }
 }
 
@@ -65,6 +65,13 @@ pub struct Pomobar {
     pub last_state: State,
     pub pomodoro_count: usize,
     pub remaining_time: Duration,
+}
+
+impl Pomobar {
+    pub fn with_state(&mut self, new_state: &State) -> &mut Self {
+        self.state = new_state.clone();
+        self
+    }
 }
 
 impl Default for Pomobar {
@@ -259,7 +266,7 @@ mod tests {
     #[test]
     fn test_reset() {
         let mut pomobar = Pomobar::default();
-        pomobar.state = State::Work;
+        pomobar.with_state(&State::Work);
         pomobar.pomodoro_count = 2;
         pomobar = pomobar.reset();
         assert_eq!(pomobar.state, State::Idle);
