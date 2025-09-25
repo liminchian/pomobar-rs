@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use chrono::Duration;
+use chrono::TimeDelta;
 use serde::Serialize;
 
 use anyhow::Result;
@@ -10,7 +8,7 @@ use tokio::{
     net::UnixStream,
 };
 
-use pomobar_rs::Pomobar;
+use pomobar_rs::PomobarDispatcher;
 
 #[derive(Debug, Clone, Serialize)]
 struct Waybar {
@@ -20,33 +18,24 @@ struct Waybar {
     tooltip: String,
 }
 
-impl From<Pomobar> for Waybar {
-    fn from(value: Pomobar) -> Self {
-        let minutes = value.remaining_time.num_minutes();
-        let seconds = value
-            .remaining_time
-            .checked_sub(&Duration::minutes(minutes))
+impl From<PomobarDispatcher> for Waybar {
+    fn from(value: PomobarDispatcher) -> Self {
+        let remaining_time = value.get_remaining_time();
+        let mins = remaining_time.num_minutes();
+        let secs = remaining_time
+            .checked_sub(&TimeDelta::minutes(mins))
             .unwrap()
             .num_seconds();
 
-        let time = format!("{:02}:{:02}", minutes, seconds);
-        let count = value.pomodoro_count;
-        let class = value.state.to_string();
-        let tooltip = format!("Completed {} pomodoros", count);
+        let state = value.get_state_name();
+        let cycles = value.get_cycles();
 
         Self {
-            text: time,
-            alt: class.clone(),
-            class,
-            tooltip,
+            text: format!("{:02}:{:02}", mins, secs),
+            alt: state.to_string(),
+            class: state.to_string(),
+            tooltip: format!("Complete {} pomodoros.", cycles),
         }
-    }
-}
-
-impl std::fmt::Display for Waybar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let content = serde_json::to_string(&self).unwrap();
-        f.write_str(&content)
     }
 }
 
@@ -59,21 +48,23 @@ async fn main() -> Result<()> {
         .subcommand(command!("toggle").about("Start/Pause pomodoro."))
         .subcommand(command!("reset").about("Reset pomodoro"));
 
-    let matches = cmd.get_matches();
-
     let mut socket = UnixStream::connect(path).await?;
 
+    let matches = cmd.get_matches();
     let command = matches.subcommand_name().unwrap();
-
     socket.write_all(command.as_bytes()).await?;
 
     let mut buf = vec![0; 1024];
+    let content_length = socket.read(&mut buf).await.unwrap();
 
-    let n = socket.read(&mut buf).await.unwrap();
+    if content_length > 0 {
+        let json_content = String::from_utf8(buf[..content_length].to_vec()).unwrap();
+        let dispatcher: PomobarDispatcher = serde_json::from_str(&json_content).unwrap();
+        let waybar = Waybar::from(dispatcher);
+        let waybar_json = serde_json::to_string(&waybar).unwrap();
 
-    let content = String::from_utf8(buf[..n].to_vec()).unwrap();
-
-    println!("{}", Waybar::from(Pomobar::from_str(&content).unwrap()));
+        println!("{waybar_json}");
+    }
 
     Ok(())
 }

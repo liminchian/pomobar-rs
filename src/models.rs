@@ -1,275 +1,251 @@
-use chrono::Duration;
+use chrono::{Duration, Local, NaiveDateTime};
 use notify_rust::{Notification, Urgency};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    Idle,
-    Work,
-    ShortBreak,
-    LongBreak,
-    Paused,
+// --- Notifications ---
+
+pub fn send_notification(summary: &str) {
+    Notification::new()
+        .summary(summary)
+        .urgency(Urgency::Low)
+        .appname("pomobar")
+        .icon("pomobar")
+        .show()
+        .unwrap();
 }
 
-impl State {
-    pub fn notify_when_start() -> Notification {
-        Notification::new()
-            .summary("It's time to focus!")
-            .urgency(Urgency::Low)
-            .appname("pomobar")
-            .icon("pomobar")
-            .clone()
-    }
+// --- State Marker Traits and Structs ---
 
-    pub fn notify_when_pause() -> Notification {
-        Notification::new()
-            .summary("Paused the pomodoro!")
-            .urgency(Urgency::Low)
-            .appname("pomobar")
-            .icon("pomobar")
-            .clone()
-    }
+/// A trait for states that have a defined duration.
+pub trait TimedState {
+    fn duration(&self) -> Duration;
+}
 
-    pub fn notify_when_take_break() -> Notification {
-        Notification::new()
-            .summary("It's time to take break!")
-            .urgency(Urgency::Low)
-            .appname("pomobar")
-            .icon("pomobar")
-            .clone()
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Idle;
 
-    pub fn notify_when_reset() -> Notification {
-        Notification::new()
-            .summary("Reset the pomodoro!")
-            .urgency(Urgency::Low)
-            .appname("pomobar")
-            .icon("pomobar")
-            .clone()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Work {
+    pub started_at: NaiveDateTime,
+    pub cycles: u32,
+}
+
+impl TimedState for Work {
+    fn duration(&self) -> Duration {
+        Duration::minutes(25)
     }
 }
 
-impl std::fmt::Display for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let content = serde_json::to_string(&self).unwrap();
-        write!(f, "{}", content)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Paused {
+    pub remaining: Duration,
+    pub cycles: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortBreak {
+    pub started_at: NaiveDateTime,
+    pub cycles: u32,
+}
+
+impl TimedState for ShortBreak {
+    fn duration(&self) -> Duration {
+        Duration::minutes(5)
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Pomobar {
-    pub id: String,
-    pub state: State,
-    pub last_state: State,
-    pub pomodoro_count: usize,
-    pub remaining_time: Duration,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongBreak {
+    pub started_at: NaiveDateTime,
+    pub cycles: u32,
 }
 
-impl Pomobar {
-    pub fn with_state(&mut self, new_state: &State) -> &mut Self {
-        self.state = new_state.clone();
-        self
+impl TimedState for LongBreak {
+    fn duration(&self) -> Duration {
+        Duration::minutes(15)
     }
 }
 
-impl Default for Pomobar {
+// --- Generic Pomodoro Timer ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pomobar<S> {
+    pub state: S,
+}
+
+// --- Transitions ---
+
+// Transitions from Idle
+impl Pomobar<Idle> {
+    pub fn new() -> Self {
+        Pomobar { state: Idle }
+    }
+
+    pub fn start(self) -> Pomobar<Work> {
+        send_notification("Time to focus!");
+        Pomobar {
+            state: Work {
+                started_at: Local::now().naive_local(),
+                cycles: 0,
+            },
+        }
+    }
+}
+
+impl Default for Pomobar<Idle> {
     fn default() -> Self {
-        let id = Uuid::new_v4().to_string();
-        let state = State::Idle;
-        let last_state = State::Idle;
-        let pomodoro_count = 0;
-        let remaining_time = Duration::minutes(25);
+        Self::new()
+    }
+}
+
+// Transitions from Working
+impl Pomobar<Work> {
+    pub fn pause(self) -> Pomobar<Paused> {
+        send_notification("Pomodoro paused.");
+        let elapsed = Local::now().naive_local() - self.state.started_at;
+        let remaining = self.state.duration() - elapsed;
+        Pomobar {
+            state: Paused {
+                remaining: if remaining > Duration::zero() {
+                    remaining
+                } else {
+                    Duration::zero()
+                },
+                cycles: self.state.cycles,
+            },
+        }
+    }
+
+    pub fn finish(self) -> PomobarDispatcher {
+        send_notification("Time for a break!");
+        let new_cycles = self.state.cycles + 1;
+        if new_cycles.is_multiple_of(4) {
+            PomobarDispatcher::LongBreak(Pomobar {
+                state: LongBreak {
+                    started_at: Local::now().naive_local(),
+                    cycles: new_cycles,
+                },
+            })
+        } else {
+            PomobarDispatcher::ShortBreak(Pomobar {
+                state: ShortBreak {
+                    started_at: Local::now().naive_local(),
+                    cycles: new_cycles,
+                },
+            })
+        }
+    }
+}
+
+// Transitions from Paused
+impl Pomobar<Paused> {
+    pub fn resume(self) -> Pomobar<Work> {
+        send_notification("Resuming pomodoro.");
+        // To keep the original end time, we calculate a new start time.
+        let new_started_at =
+            Local::now().naive_local() - (Duration::minutes(25) - self.state.remaining);
 
         Pomobar {
-            id,
-            state,
-            last_state,
-            pomodoro_count,
-            remaining_time,
+            state: Work {
+                started_at: new_started_at,
+                cycles: self.state.cycles,
+            },
         }
     }
 }
 
-impl std::fmt::Display for Pomobar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let content = serde_json::to_string(&self).unwrap();
-        f.write_str(&content)
+// Transitions from Breaks
+impl Pomobar<ShortBreak> {
+    pub fn finish(self) -> Pomobar<Work> {
+        send_notification("Break is over. Time to focus!");
+        Pomobar {
+            state: Work {
+                started_at: Local::now().naive_local(),
+                cycles: self.state.cycles,
+            },
+        }
     }
 }
 
-impl std::str::FromStr for Pomobar {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let data: Pomobar = serde_json::from_str(s)?;
-        Ok(data)
+impl Pomobar<LongBreak> {
+    pub fn finish(self) -> Pomobar<Work> {
+        send_notification("Long break is over. Time to get back to it!");
+        Pomobar {
+            state: Work {
+                started_at: Local::now().naive_local(),
+                cycles: self.state.cycles,
+            },
+        }
     }
 }
 
-impl Pomobar {
-    pub fn status(&mut self) -> Self {
-        match self.state {
-            State::Paused | State::Idle => self.clone(),
-            State::Work => {
-                if !self.timeout() {
-                    self.count_down()
+// --- Pomodoro Dispatcher Enum ---
+
+/// An enum to hold any possible state of the Pomodoro timer.
+/// This allows us to have a single variable hold the state machine
+/// while still enforcing typed transitions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum PomobarDispatcher {
+    Idle(Pomobar<Idle>),
+    Work(Pomobar<Work>),
+    Paused(Pomobar<Paused>),
+    ShortBreak(Pomobar<ShortBreak>),
+    LongBreak(Pomobar<LongBreak>),
+}
+
+impl PomobarDispatcher {
+    pub fn get_remaining_time(&self) -> Duration {
+        match self {
+            PomobarDispatcher::Work(p) => {
+                let elapsed = Local::now().naive_local() - p.state.started_at;
+                let remaining = p.state.duration() - elapsed;
+                if remaining < Duration::zero() {
+                    Duration::zero()
                 } else {
-                    self.pomodoro_count += 1;
-                    let result = self.take_break();
-                    State::notify_when_take_break().show().unwrap();
-                    result
+                    remaining
                 }
             }
-            State::LongBreak | State::ShortBreak => {
-                if !self.timeout() {
-                    self.count_down()
+            PomobarDispatcher::Paused(p) => p.state.remaining,
+            PomobarDispatcher::ShortBreak(p) => {
+                let elapsed = Local::now().naive_local() - p.state.started_at;
+                let remaining = p.state.duration() - elapsed;
+                if remaining < Duration::zero() {
+                    Duration::zero()
                 } else {
-                    let result = self.work();
-                    State::notify_when_start().show().unwrap();
-                    result
+                    remaining
                 }
             }
-        }
-    }
-
-    fn count_down(&mut self) -> Self {
-        self.remaining_time -= Duration::seconds(1);
-        self.clone()
-    }
-
-    fn timeout(&self) -> bool {
-        self.remaining_time <= Duration::seconds(0)
-    }
-
-    fn work(&mut self) -> Self {
-        self.last_state = self.state.clone();
-        self.state = State::Work;
-        self.remaining_time = Duration::minutes(25);
-
-        if let State::LongBreak = self.last_state {
-            self.pomodoro_count = 0;
-        }
-
-        self.clone()
-    }
-
-    pub fn toggle(&mut self) -> Self {
-        if let State::Idle = self.state {
-            State::notify_when_start().show().unwrap();
-            return self.work();
-        }
-
-        if let State::Paused = self.state {
-            self.state = self.last_state.clone();
-            self.last_state = State::Paused;
-
-            if let State::LongBreak | State::ShortBreak = self.last_state {
-                State::notify_when_take_break().show().unwrap();
-            } else {
-                State::notify_when_start().show().unwrap();
-            };
-        } else {
-            self.last_state = self.state.clone();
-            self.state = State::Paused;
-
-            State::notify_when_pause().show().unwrap();
-        }
-        self.clone()
-    }
-
-    fn take_break(&mut self) -> Self {
-        if let State::Work = self.state {
-            if self.pomodoro_count < 4 {
-                self.last_state = self.state.clone();
-                self.state = State::ShortBreak;
-                self.remaining_time = Duration::minutes(5);
-            } else if self.pomodoro_count == 4 {
-                self.last_state = self.state.clone();
-                self.state = State::LongBreak;
-                self.remaining_time = Duration::minutes(15);
+            PomobarDispatcher::LongBreak(p) => {
+                let elapsed = Local::now().naive_local() - p.state.started_at;
+                let remaining = p.state.duration() - elapsed;
+                if remaining < Duration::zero() {
+                    Duration::zero()
+                } else {
+                    remaining
+                }
             }
+            PomobarDispatcher::Idle(_) => Duration::minutes(25),
         }
-        self.clone()
     }
 
-    pub fn reset(&mut self) -> Self {
-        let resutl = Self::default();
-        State::notify_when_reset().show().unwrap();
-        resutl
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default() {
-        let pomobar = Pomobar::default();
-        assert_eq!(pomobar.state, State::Idle);
-        assert_eq!(pomobar.last_state, State::Idle);
-        assert_eq!(pomobar.pomodoro_count, 0);
-        assert_eq!(pomobar.remaining_time, Duration::minutes(25));
-    }
-
-    #[test]
-    fn test_toggle() {
-        let mut pomobar = Pomobar::default();
-        pomobar = pomobar.toggle();
-        assert_eq!(pomobar.state, State::Work);
-
-        pomobar = pomobar.toggle();
-        assert_eq!(pomobar.state, State::Paused);
-
-        pomobar = pomobar.toggle();
-        assert_eq!(pomobar.state, State::Work);
-    }
-
-    #[test]
-    fn test_work_flow() {
-        let mut pomobar = Pomobar::default();
-        pomobar = pomobar.toggle();
-
-        for i in 0..3 {
-            pomobar.remaining_time = Duration::seconds(0);
-            pomobar = pomobar.status();
-            assert_eq!(pomobar.pomodoro_count, i + 1);
-            assert_eq!(pomobar.state, State::ShortBreak);
-
-            pomobar.remaining_time = Duration::seconds(0);
-            pomobar = pomobar.status();
-            assert_eq!(pomobar.pomodoro_count, i + 1);
-            assert_eq!(pomobar.state, State::Work);
+    pub fn get_state_name(&self) -> &str {
+        match self {
+            PomobarDispatcher::Idle(_) => "idle",
+            PomobarDispatcher::Work(_) => "work",
+            PomobarDispatcher::Paused(_) => "paused",
+            PomobarDispatcher::ShortBreak(_) => "short_break",
+            PomobarDispatcher::LongBreak(_) => "long_break",
         }
-
-        pomobar.remaining_time = Duration::seconds(0);
-        pomobar = pomobar.status();
-        assert_eq!(pomobar.pomodoro_count, 4);
-        assert_eq!(pomobar.state, State::LongBreak);
-
-        pomobar.remaining_time = Duration::seconds(0);
-        pomobar = pomobar.status();
-        assert_eq!(pomobar.pomodoro_count, 0);
-        assert_eq!(pomobar.state, State::Work);
     }
 
-    #[test]
-    fn test_count_down() {
-        let mut pomobar = Pomobar::default();
-        let initial_time = pomobar.remaining_time;
-        pomobar = pomobar.count_down();
-        assert_eq!(pomobar.remaining_time, initial_time - Duration::seconds(1));
-    }
-
-    #[test]
-    fn test_reset() {
-        let mut pomobar = Pomobar::default();
-        pomobar.with_state(&State::Work);
-        pomobar.pomodoro_count = 2;
-        pomobar = pomobar.reset();
-        assert_eq!(pomobar.state, State::Idle);
-        assert_eq!(pomobar.pomodoro_count, 0);
+    pub fn get_cycles(&self) -> u32 {
+        match self {
+            PomobarDispatcher::Idle(_) => 0,
+            PomobarDispatcher::Work(p) => p.state.cycles,
+            PomobarDispatcher::Paused(p) => p.state.cycles,
+            PomobarDispatcher::ShortBreak(p) => p.state.cycles,
+            PomobarDispatcher::LongBreak(p) => p.state.cycles,
+        }
     }
 }
