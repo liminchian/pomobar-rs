@@ -1,3 +1,5 @@
+use std::process::exit;
+
 use chrono::TimeDelta;
 use serde::Serialize;
 
@@ -46,13 +48,21 @@ async fn main() -> Result<()> {
     let cmd = command!()
         .subcommand(command!("status").about("Get currently pomodoro status."))
         .subcommand(command!("toggle").about("Start/Pause pomodoro."))
-        .subcommand(command!("reset").about("Reset pomodoro"));
+        .subcommand(command!("reset").about("Reset pomodoro."));
 
     let mut socket = UnixStream::connect(path).await?;
 
-    let matches = cmd.get_matches();
-    let command = matches.subcommand_name().unwrap();
-    socket.write_all(command.as_bytes()).await?;
+    let matches = cmd.clone().get_matches();
+
+    match matches.subcommand_name() {
+        Some(command) => {
+            socket.write_all(command.as_bytes()).await?;
+        }
+        None => {
+            cmd.clone().print_help().unwrap();
+            exit(127);
+        }
+    };
 
     let mut buf = vec![0; 1024];
     let content_length = socket.read(&mut buf).await.unwrap();
