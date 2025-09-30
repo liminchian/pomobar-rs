@@ -1,4 +1,4 @@
-use chrono::{Duration, Local, NaiveDateTime};
+use chrono::{Duration, Local, NaiveDateTime, TimeDelta};
 use notify_rust::{Notification, Urgency};
 use serde::{Deserialize, Serialize};
 
@@ -194,6 +194,14 @@ pub enum PomobarDispatcher {
     LongBreak(Pomobar<LongBreak>),
 }
 
+#[derive(Serialize, Deserialize)]
+struct StatusView<'view> {
+    alt: &'view str,
+    class: &'view str,
+    text: &'view str,
+    tooltip: &'view str,
+}
+
 impl PomobarDispatcher {
     pub fn get_remaining_time(&self) -> Duration {
         match self {
@@ -247,5 +255,23 @@ impl PomobarDispatcher {
             PomobarDispatcher::ShortBreak(p) => p.state.cycles,
             PomobarDispatcher::LongBreak(p) => p.state.cycles,
         }
+    }
+
+    pub fn to_view(&self) -> String {
+        let mins = self.get_remaining_time().num_minutes();
+        let secs = self
+            .get_remaining_time()
+            .checked_sub(&TimeDelta::minutes(mins))
+            .unwrap()
+            .num_seconds();
+
+        let view = StatusView {
+            alt: self.get_state_name(),
+            class: self.get_state_name(),
+            text: &format!("{mins:02}:{secs:02}"),
+            tooltip: &format!("Completed {} pomodoros.", self.get_cycles()),
+        };
+
+        serde_json::to_string(&view).unwrap()
     }
 }

@@ -9,6 +9,7 @@ use tokio::{
     sync::mpsc,
     time::sleep,
 };
+use tracing::Level;
 
 #[macro_use]
 extern crate tracing;
@@ -23,6 +24,10 @@ enum ServerEvent {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(Level::TRACE)
+        .init();
+
     let path = "/tmp/pomobar.sock";
 
     if Path::new(path).exists() {
@@ -61,6 +66,7 @@ async fn main() -> Result<()> {
                         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                         socket_tx.send(ServerEvent::Status(resp_tx)).await.unwrap();
                         let response = resp_rx.await.unwrap();
+                        debug!("{response}");
                         socket.write_all(response.as_bytes()).await.unwrap();
                     }
                 }
@@ -92,7 +98,7 @@ async fn main() -> Result<()> {
                 debug!("State reset to Idle.");
             }
             ServerEvent::Status(resp_tx) => {
-                let json_content = serde_json::to_string(&pomodoro).unwrap();
+                let json_content = pomodoro.to_view();
                 resp_tx.send(json_content).unwrap();
             }
             ServerEvent::Tick => {
